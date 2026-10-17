@@ -92,6 +92,8 @@ body.guest aside#side,body.guest header.top{display:none}
 <div id="modal"></div>
 <div id="toast" onclick="this.style.display='none'"></div>
 <div id="print"></div>
+<script src="supabase.js"></script>
+<script src="config.js"></script>
 <script>
 /* ============ helpers ============ */
 const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
@@ -106,7 +108,7 @@ const scope=()=>can('scope.all')?(S.settings.scope||cur()):cur();
 const inS=x=>scope()==='ALL'||x.branchId===scope();
 const br=id=>S.branches.find(b=>b.id===(id||cur()));
 const nid=p=>p+'_'+cur()+'_'+now().toString(36)+Math.random().toString(36).slice(2,6);
-const nextNo=p=>{const k=p+cur();S.seq[k]=(S.seq[k]||0)+1;return p+'-'+br().code+'-'+String(S.seq[k]).padStart(4,'0')};
+const nextNo=p=>{const t=CLOUD?devTag():'',k=p+cur()+t;S.seq[k]=(S.seq[k]||0)+1;return p+'-'+br().code+(t?'-'+t:'')+'-'+String(S.seq[k]).padStart(4,'0')};
 const prod=id=>S.products.find(x=>x.id===id)||{name:'?',sku:'?',cost:0,price:0};
 const pn=id=>(S.partners.find(x=>x.id===id)||{name:'?'}).name;
 const tx=p=>p.tax??S.settings.taxRate;
@@ -163,15 +165,17 @@ const can=(p,u)=>{u=u||U;if(!u)return false;const r=ROLES[u.role];return !!r&&(r
 const need=p=>can(p)?true:(alert('Your role ('+(U?ROLES[U.role].label:'none')+') is not allowed to do this.'),false);
 const B=(p,h)=>can(p)?h:'';
 function approve(perm,cb){if(can(perm))return cb(U);
- window._okAp=()=>{const u=S.users.find(x=>x.active!==false&&x.username===$('#ap_u').value.trim().toLowerCase());
-  if(!u||u.hash!==hashPw(u,$('#ap_p').value)||!can(perm,u))return alert('Approval denied. A supervisor with the right permission must sign in.');closeM();log('approval',perm+' by '+u.name);cb(u)};
+ window._okAp=async()=>{let u=null;const un=$('#ap_u').value.trim().toLowerCase(),pw=$('#ap_p').value;
+  if(CLOUD){try{const p=await DB.verify(un,pw);u=p&&p.active!==false?mapP(p):null}catch(e){u=null}}
+  else{u=S.users.find(x=>x.active!==false&&x.username===un);if(u&&u.hash!==hashPw(u,pw))u=null}
+  if(!u||!can(perm,u))return alert('Approval denied. A supervisor with the right permission must sign in.');closeM();log('approval',perm+' by '+u.name);cb(u)};
  modal(`<h3>Supervisor approval needed</h3><p class="mu">Ask a manager to enter their own login.</p><div class="fg"><label>Username<input id="ap_u" autocomplete="off"></label><label>Password<input id="ap_p" type="password" onkeydown="if(event.key==='Enter')_okAp()"></label></div><div class="ac"><button class="b2" onclick="closeM()">Cancel</button><button onclick="_okAp()">Approve</button></div>`)}
 
 /* ============ persistence ============ */
 const ST='kv';
 const idb=()=>new Promise((res,rej)=>{const r=indexedDB.open('stockroom',1);r.onupgradeneeded=()=>r.result.createObjectStore(ST);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
 async function load(){try{const d=await idb();return await new Promise(res=>{const g=d.transaction(ST).objectStore(ST).get('s');g.onsuccess=()=>res(g.result||null);g.onerror=()=>res(null)})}catch(e){try{return JSON.parse(localStorage.getItem('sr'))}catch(e2){return null}}}
-let svT;function save(){clearTimeout(svT);svT=setTimeout(async()=>{try{const d=await idb();d.transaction(ST,'readwrite').objectStore(ST).put(S,'s')}catch(e){try{localStorage.setItem('sr',JSON.stringify(S))}catch(e2){}}},150)}
+let svT;function save(){clearTimeout(svT);svT=setTimeout(async()=>{try{const d=await idb();d.transaction(ST,'readwrite').objectStore(ST).put(S,'s')}catch(e){try{localStorage.setItem('sr',JSON.stringify(S))}catch(e2){}}if(CLOUD&&U)pushSoon()},150)}
 
 /* ============ seed & migration ============ */
 const ACCTS=[['1000','Cash','asset'],['1010','Bank','asset'],['1100','Accounts Receivable','asset'],['1200','Inventory','asset'],['1300','VAT Input (recoverable)','asset'],['2100','Accounts Payable','liability'],['2110','Goods Received Not Invoiced','liability'],['2200','VAT Output (payable)','liability'],['3000','Owner Equity','equity'],['4000','Sales Revenue','income'],['4010','Sales Discounts','income'],['4020','Sales Returns & Refunds','income'],['5000','Cost of Goods Sold','expense'],['5100','Inventory Adjustments','expense'],['5200','Purchase Price Variance','expense'],['5300','Cash Over / Short','expense'],['6000','General Expenses','expense'],['1500','Fixed Assets (cost)','asset'],['1510','Accumulated Depreciation','asset'],['3100','Retained Earnings','equity'],['5400','FX Gain / Loss','expense'],['6100','Depreciation Expense','expense'],['6200','Gain / Loss on Asset Disposal','expense'],['6300','Bank Charges','expense']];
@@ -220,11 +224,12 @@ function shell(){$('#co').textContent=S.settings.company;$('#brn').textContent=b
  $('#hu').innerHTML=U?`${avatar(U.name)}<div><b>${esc(U.name)}</b><small>${ROLES[U.role].label}</small></div>`:'';
  $('#nav').innerHTML=U?NAV.filter(n=>can('v:'+n[0])).map(n=>`<a class="${page===n[0]?'on':''}" onclick="go('${n[0]}')">${icon(n[0])}<span>${n[1]}</span></a>`).join(''):'';
  $('#bdot').style.display=LOWN>0?'block':'none';$('#bell').title=LOWN>0?LOWN+' item(s) at or below reorder level':'No alerts';netStat()}
-function netStat(){const o=navigator.onLine;$('#dot').className='dot'+(o?'':' off');$('#net').textContent=o?'online':'offline'}
+function netStat(){const o=navigator.onLine;$('#dot').className='dot'+(o&&CS.state!=='error'?'':' off');$('#net').textContent=!o?(CLOUD&&U?'offline · will sync later':'offline'):CLOUD&&U?(CS.state==='synced'?'online · saved':CS.state==='error'?'sync problem':'syncing…'):'online';$('#net').title=CS.err||''}
 addEventListener('online',netStat);addEventListener('offline',netStat);
 let idleT;function bump(){clearTimeout(idleT);if(U&&S&&S.settings.lockMin>0)idleT=setTimeout(logout,S.settings.lockMin*60000)}
 ['click','keydown','touchstart'].forEach(e=>addEventListener(e,bump));
 function render(){
+ if(CLOUD&&!U){shell();$('#main').innerHTML=cloudGate();return}
  if(!S.users.length){shell();$('#main').innerHTML=setupPage();return}
  if(!U){shell();$('#main').innerHTML=loginPage();return}
  if(!can('v:'+page))page='dash';
@@ -236,16 +241,16 @@ const match=(s)=>!q||s.toLowerCase().includes(q.toLowerCase());
 /* ============ login / setup ============ */
 let fails=0,lockUntil=0;
 function setupPage(){return `<div class="login"><div class="pn"><div class="lb"><span class="logo">${icon('dash')}</span>${esc(S.settings.company)}</div><h2>Welcome. Create the administrator</h2><p class="mu">This account manages users, roles and settings. Keep the password safe.</p><div class="fg"><label>Full name<input id="su_n"></label><label>Username<input id="su_u" autocomplete="off"></label><label>Password (min 6)<input id="su_p" type="password"></label><label>Repeat password<input id="su_p2" type="password"></label></div><div class="ac"><button class="b2" onclick="restore()">Restore backup</button><button class="b2" onclick="importSync()">Import sync file</button><button onclick="doSetup()">Create &amp; sign in</button></div></div></div>`}
-function doSetup(){const n=$('#su_n').value.trim(),u=$('#su_u').value.trim(),p=$('#su_p').value;
+function doSetup(){if(CLOUD)return cloudSetup();const n=$('#su_n').value.trim(),u=$('#su_u').value.trim(),p=$('#su_p').value;
  if(!n||!u)return alert('Name and username are required');if(p.length<6)return alert('Password must be at least 6 characters');if(p!==$('#su_p2').value)return alert('Passwords do not match');
  const usr=mkUser(n,u,'admin','ALL',p);S.users.push(usr);U=usr;log('admin created');try{sessionStorage.setItem('sr_uid',usr.id)}catch(e){}save();bump();page='dash';render()}
 function loginPage(){return `<div class="login"><div class="pn"><div class="lb"><span class="logo">${icon('dash')}</span>${esc(S.settings.company)}</div><h2>Sign in</h2><p class="sub">Enter your details to continue.</p><div class="fg" style="grid-template-columns:1fr"><label>Username<input id="lu" autocomplete="username"></label><label>Password<input id="lpw" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></label></div><div class="ac"><button onclick="doLogin()">Sign in</button></div></div></div>`}
-function doLogin(){if(now()<lockUntil)return alert('Too many attempts. Wait '+Math.ceil((lockUntil-now())/1000)+' seconds.');
+function doLogin(){if(CLOUD)return cloudLogin();if(now()<lockUntil)return alert('Too many attempts. Wait '+Math.ceil((lockUntil-now())/1000)+' seconds.');
  const u=S.users.find(x=>x.username===$('#lu').value.trim().toLowerCase());
  if(!u||u.active===false||u.hash!==hashPw(u,$('#lpw').value)){if(++fails>=5){fails=0;lockUntil=now()+30000}return alert('Wrong username or password')}
  if(u.branchId&&u.branchId!=='ALL'&&u.branchId!==cur())return alert('This user belongs to another branch.');
  fails=0;U=u;try{sessionStorage.setItem('sr_uid',u.id)}catch(e){}log('login');save();bump();page='dash';render()}
-function logout(){U=null;try{sessionStorage.removeItem('sr_uid')}catch(e){}render()}
+function logout(){if(CLOUD){DB.signOut().catch(()=>{});clearInterval(pollT);S.users=[];CS.state='off'}U=null;try{sessionStorage.removeItem('sr_uid')}catch(e){}render()}
 
 /* ============ generic form ============ */
 function fld(f){const v=f.val??'',id='f_'+f.k;
@@ -1198,7 +1203,7 @@ function finishPOS(){if(!need('pos.sell'))return;const c=calc(),shop=locOf('shop
 /* ============ settings, users, sync, backup ============ */
 function settingsPage(){const s=S.settings,A=can('settings.edit'),Um=can('users.manage');
  const yn=v=>[['y','Yes'],['n','No']].map(o=>`<option value="${o[0]}" ${(v?'y':'n')===o[0]?'selected':''}>${o[1]}</option>`).join('');
- return `<h2>Settings</h2>
+ return `<h2>Settings</h2>${CLOUD?accountPanel():''}
  ${A?`<div class="pn"><h3>Business</h3><div class="fg"><label>Company<input id="s_co" value="${esc(s.company)}"></label><label>Currency symbol<input id="s_cur" value="${esc(s.currency)}"></label><label>Default tax %<input id="s_tax" type="number" step="any" value="${s.taxRate}"></label>
  <label>This device is branch<select id="s_br">${S.branches.map(b=>`<option value="${b.id}" ${b.id===cur()?'selected':''}>${esc(b.name)}</option>`).join('')}</select></label>
  <label>Max discount cashiers may give (%)<input id="s_md" type="number" step="any" value="${s.maxDisc}"></label><label>Refunds above this need approval<input id="s_ra" type="number" step="any" value="${s.refundAbove}"></label>
@@ -1215,7 +1220,7 @@ function settingsPage(){const s=S.settings,A=can('settings.edit'),Um=can('users.
 function saveSet(){if(!need('settings.edit'))return;const s=S.settings,n=id=>+$('#'+id).value||0;
  s.company=$('#s_co').value||'ASO-TECH SERVICES';s.currency=$('#s_cur').value;s.taxRate=n('s_tax');s.maxDisc=n('s_md');s.refundAbove=n('s_ra');s.lockMin=n('s_lk');s.loyOn=$('#s_lo').value==='y';s.loyPer=n('s_lp');s.loyAmt=n('s_la')||100;s.loyVal=n('s_lv')||1;s.loyMin=n('s_lm');s.loyMax=n('s_lx');s.poApprove=n('s_pa');s.matchTol=n('s_mt');s.posSess=$('#s_ps').value==='y';
  const b=$('#s_br').value;if(b!==cur()){s.branchId=b;s.scope=b}log('settings changed');save();bump();render()}
-function userForm(id){if(!need('users.manage'))return;const u=S.users.find(x=>x.id===id)||{name:'',username:'',role:'sales',branchId:'ALL',active:true};
+function userForm(id){if(!need('users.manage'))return;if(CLOUD)return userFormCloud(id);const u=S.users.find(x=>x.id===id)||{name:'',username:'',role:'sales',branchId:'ALL',active:true};
  openForm(id?'Edit user':'New user',[{k:'name',label:'Full name',val:u.name},{k:'username',label:'Username',val:u.username},{k:'role',label:'Department / role',type:'select',opts:Object.keys(ROLES).map(k=>[k,ROLES[k].label]),val:u.role},{k:'branchId',label:'Branch access',type:'select',opts:[['ALL','All branches']].concat(S.branches.map(b=>[b.id,b.name])),val:u.branchId},{k:'active',label:'Status',type:'select',opts:[['y','Active'],['n','Disabled']],val:u.active===false?'n':'y'},{k:'pw',label:id?'New password (leave blank to keep)':'Password (min 6)',type:'password'}],o=>{
  const un=o.username.trim().toLowerCase();if(!o.name||!un)throw new Error('Name and username are required');if(S.users.some(x=>x.username===un&&x.id!==id))throw new Error('Username already taken');
  if(!id&&o.pw.length<6)throw new Error('Password must be at least 6 characters');if(o.pw&&o.pw.length<6)throw new Error('Password must be at least 6 characters');
@@ -1238,11 +1243,106 @@ function pick(cb){const i=document.createElement('input');i.type='file';i.accept
 function importSync(){if(S.users.length&&!need('sync'))return;pick(pkg=>{if(pkg.app!=='stockroom')return alert('Not a sync file from this app.');let add=0,upd=0;
  for(const c of COLL){const mine=new Map(S[c].map(x=>[x.id,x]));for(const x of pkg[c]||[]){const m=mine.get(x.id);if(!m){S[c].push(x);add++}else if((x.u||0)>(m.u||0)){Object.assign(m,x);upd++}}}
  if(U)log('sync import','from '+pkg.from+': '+add+' new, '+upd+' updated');save();render();alert(`Imported from ${pkg.from}: ${add} new records, ${upd} updated.`)})}
-function restore(){if(S.users.length&&!need('settings.edit'))return;pick(d=>{if(!d.settings||!d.products)return alert('Not a backup file.');if(!confirm('Replace ALL data on this device with the backup?'))return;S=d;migrate();U=null;try{sessionStorage.removeItem('sr_uid')}catch(e){}save();render()})}
-function resetAll(){if(!need('settings.edit'))return;if(!confirm('Erase all data on this device, including users? This cannot be undone.'))return;if(prompt('Type ERASE to confirm')!=='ERASE')return;S=seed();U=null;cart=[];try{sessionStorage.removeItem('sr_uid')}catch(e){}save();render()}
+function restore(){if(CLOUD)return alert('Restore is disabled when using the company database, because it could overwrite everyone\'s data. Use Supabase backups instead.');if(S.users.length&&!need('settings.edit'))return;pick(d=>{if(!d.settings||!d.products)return alert('Not a backup file.');if(!confirm('Replace ALL data on this device with the backup?'))return;S=d;migrate();U=null;try{sessionStorage.removeItem('sr_uid')}catch(e){}save();render()})}
+function resetAll(){if(CLOUD)return alert('Erasing is disabled when using the company database. Delete data from the Supabase dashboard if you really need to.');if(!need('settings.edit'))return;if(!confirm('Erase all data on this device, including users? This cannot be undone.'))return;if(prompt('Type ERASE to confirm')!=='ERASE')return;S=seed();U=null;cart=[];try{sessionStorage.removeItem('sr_uid')}catch(e){}save();render()}
 
 /* ============ boot ============ */
-(async()=>{S=await load();if(!S){S=seed();save()}migrate();try{const id=sessionStorage.getItem('sr_uid');const u=S.users.find(x=>x.id===id&&x.active!==false);if(u)U=u}catch(e){}bump();render()})();
+/* ============ cloud: Supabase login + shared database ============ */
+const CFG=window.ASO_CONFIG||{};
+const SB_URL=(CFG.url||'').trim(),SB_KEY=(CFG.key||'').trim();
+const CLOUD=!!(SB_URL&&SB_KEY);
+let SB=null;const CS={state:'off',since:'1970-01-01T00:00:00Z',err:'',setup:false};
+const mapP=p=>({id:p.id,name:p.name,username:p.username,role:p.role,branchId:p.branch_id||'ALL',active:p.active!==false});
+const devTag=()=>{try{let t=localStorage.getItem('aso-dev');if(!t){t=Math.random().toString(36).replace(/[^a-z0-9]/g,'').slice(0,2).toUpperCase()||'XX';localStorage.setItem('aso-dev',t)}return t}catch(e){return 'XX'}};
+const mkClient=(persist)=>window.supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:persist,autoRefreshToken:persist,detectSessionInUrl:false,storageKey:persist?'aso-auth':'aso-tmp-'+Math.random().toString(36).slice(2)}});
+const fail=r=>{if(r.error)throw new Error(r.error.message||String(r.error));return r.data};
+const DB={
+ email:u=>String(u).trim().toLowerCase()+'@aso-tech.app',
+ init(){SB=mkClient(true)},
+ async setupNeeded(){return !!fail(await SB.rpc('setup_needed'))},
+ async session(){const d=fail(await SB.auth.getSession());return d.session},
+ async signIn(un,pw){return fail(await SB.auth.signInWithPassword({email:DB.email(un),password:pw})).user},
+ async signUpMain(un,pw){const d=fail(await SB.auth.signUp({email:DB.email(un),password:pw}));if(!d.session)throw new Error('Supabase is asking for email confirmation. In Supabase go to Authentication → Providers → Email and turn OFF "Confirm email", then try again.');return d.user.id},
+ async signUpOther(un,pw){const c=mkClient(false),d=fail(await c.auth.signUp({email:DB.email(un),password:pw}));if(!d.user)throw new Error('Could not create the login');return d.user.id},
+ async signOut(){await SB.auth.signOut()},
+ async myProfile(id){return fail(await SB.from('profiles').select('*').eq('id',id).maybeSingle())},
+ async profiles(){return fail(await SB.from('profiles').select('*').order('created_at'))},
+ async addProfile(p){fail(await SB.from('profiles').insert(p))},
+ async setProfile(id,patch){fail(await SB.from('profiles').update(patch).eq('id',id))},
+ async verify(un,pw){const c=mkClient(false),u=fail(await c.auth.signInWithPassword({email:DB.email(un),password:pw})).user;return fail(await c.from('profiles').select('*').eq('id',u.id).maybeSingle())},
+ async changePw(pw){fail(await SB.auth.updateUser({password:pw}))},
+ async pull(since){const out=[],N=1000;for(let from=0;;from+=N){const r=fail(await SB.from('records').select('coll,id,data,u,updated_at').gte('updated_at',since).order('updated_at',{ascending:true}).order('id',{ascending:true}).range(from,from+N-1));out.push(...r);if(r.length<N)break}return out},
+ async push(rows){fail(await SB.from('records').upsert(rows,{onConflict:'coll,id'}))}
+};
+/* ---- change tracking: a record is sent when it is new or its "u" stamp is newer than what the server last confirmed ---- */
+const SNAP={},SYNCC=()=>COLL.filter(c=>c!=='users'),recU=r=>r.u||r.t||0;
+const sharedSet=()=>{const s=Object.assign({},S.settings);delete s.branchId;delete s.scope;return s};
+let setHash='';
+const REJ={};
+function dirtyRows(){const rows=[];for(const c of SYNCC()){const sn=SNAP[c]||(SNAP[c]={});for(const r of S[c]||[]){const u=recU(r);if((!(r.id in sn)||u>sn[r.id])&&REJ[c+'|'+r.id]!==u)rows.push({coll:c,id:r.id,data:r,u})}}
+ const h=JSON.stringify(sharedSet());if(h!==setHash&&can('settings.edit')){S.settingsU=now();rows.push({coll:'_settings',id:'main',data:sharedSet(),u:S.settingsU,_h:h})}return rows}
+let pushing=false,pushAgain=false,pT;
+function pushSoon(){clearTimeout(pT);pT=setTimeout(pushNow,700)}
+const netErr=e=>!navigator.onLine||/failed to fetch|network|load failed/i.test(e.message||'');
+async function sendRows(ch){try{await DB.push(ch.map(r=>({coll:r.coll,id:r.id,data:r.data,u:r.u})));ch.forEach(r=>{if(r.coll==='_settings')setHash=r._h;else SNAP[r.coll][r.id]=r.u})}
+ catch(e){if(netErr(e))throw e;if(ch.length===1){REJ[ch[0].coll+'|'+ch[0].id]=ch[0].u;CS.nRej=(CS.nRej||0)+1;CS.lastRej=e.message;return}for(const r of ch)await sendRows([r])}}
+async function pushNow(){if(!CLOUD||!U)return;if(pushing){pushAgain=true;return}pushing=true;CS.nRej=0;
+ try{do{pushAgain=false;const rows=dirtyRows();for(let i=0;i<rows.length;i+=400)await sendRows(rows.slice(i,i+400))}while(pushAgain);
+  if(CS.nRej){CS.state='error';CS.err=CS.nRej+' change(s) were refused by the server: '+CS.lastRej}else{CS.state='synced';CS.err=''}}
+ catch(e){CS.state='error';CS.err=e.message}pushing=false;netStat()}
+const replaceObj=(o,n)=>{for(const k of Object.keys(o))delete o[k];Object.assign(o,n)};
+let pulling=false;
+function applySettings(d,u){if(u>(S.settingsU||0)){const keep={branchId:S.settings.branchId,scope:S.settings.scope};S.settings=Object.assign({},DEFS,d,keep);S.settingsU=u}setHash=JSON.stringify(sharedSet())}
+async function pullNow(full){if(!CLOUD||!U||pulling)return 0;pulling=true;let n=0;
+ try{const rows=await DB.pull(full?'1970-01-01T00:00:00Z':CS.since),idx={},first=S.cloudOf!==SB_URL;let mx=CS.since;
+  for(const r of rows){if(r.updated_at>mx)mx=r.updated_at;
+   if(r.coll==='_settings'){applySettings(r.data,r.u);continue}
+   if(!SYNCC().includes(r.coll))continue;const arr=S[r.coll],sn=SNAP[r.coll]||(SNAP[r.coll]={});
+   const m=idx[r.coll]||(idx[r.coll]=new Map(arr.map(x=>[x.id,x]))),cur_=m.get(r.id);
+   if(!cur_){arr.push(r.data);m.set(r.id,r.data);n++}else if(first){replaceObj(cur_,r.data);n++}else if(r.u>recU(cur_)){Object.assign(cur_,r.data);n++}
+   sn[r.id]=r.u}
+  CS.since=mx;CS.err='';
+  if(first&&full){if(U.branchId!=='ALL')for(const c of SYNCC())S[c]=S[c].filter(r=>!r.branchId||r.branchId===U.branchId);S.cloudOf=SB_URL;n++}}
+ catch(e){CS.state='error';CS.err=e.message}
+ pulling=false;if(n){save();if(!document.querySelector('#modal .mb')&&!/INPUT|SELECT|TEXTAREA/.test((document.activeElement||{}).tagName||''))render()}netStat();return n}
+let pollT;
+function startPoll(){clearInterval(pollT);pollT=setInterval(()=>{if(navigator.onLine&&U){pullNow(false).then(()=>pushNow())}},20000)}
+addEventListener('online',()=>{if(CLOUD&&U){pullNow(false).then(()=>pushNow())}});
+document.addEventListener('visibilitychange',()=>{if(CLOUD&&U&&!document.hidden)pullNow(false)});
+/* ---- sign in / set-up ---- */
+async function cloudEnter(uid){const p=await DB.myProfile(uid);if(!p||p.active===false){await DB.signOut().catch(()=>{});throw new Error('This account is disabled or has no profile. Ask the administrator.')}
+ U=mapP(p);CS.state='syncing';await pullNow(true);
+ if(U.branchId!=='ALL'&&S.branches.some(b=>b.id===U.branchId)){S.settings.branchId=U.branchId;S.settings.scope=U.branchId}
+ S.users=can('users.manage')?(await DB.profiles()).map(mapP):[U];
+ log('login');save();startPoll();pushNow()}
+async function cloudBoot(){if(!window.supabase){CS.err='lib';return}
+ try{DB.init();const ses=await DB.session();if(ses)await cloudEnter(ses.user.id);else CS.setup=await DB.setupNeeded()}catch(e){CS.err=e.message;U=null}}
+async function cloudLogin(){if(now()<lockUntil)return alert('Too many attempts. Wait '+Math.ceil((lockUntil-now())/1000)+' seconds.');
+ const un=$('#lu').value.trim(),pw=$('#lpw').value;if(!un||!pw)return alert('Enter your username and password');
+ try{const u=await DB.signIn(un,pw);await cloudEnter(u.id);fails=0;page='dash';bump();render()}
+ catch(e){U=null;if(++fails>=5){fails=0;lockUntil=now()+30000}alert(/invalid login/i.test(e.message)?'Wrong username or password':e.message)}}
+async function cloudSetup(){const n=$('#su_n').value.trim(),u=$('#su_u').value.trim().toLowerCase(),p=$('#su_p').value;
+ if(!n||!u)return alert('Name and username are required');if(!/^[a-z0-9._-]+$/.test(u))return alert('Username: letters, numbers, dot, dash or underscore only');if(p.length<6)return alert('Password must be at least 6 characters');if(p!==$('#su_p2').value)return alert('Passwords do not match');
+ try{let uid;try{uid=await DB.signUpMain(u,p)}catch(e){if(/already/i.test(e.message)){uid=(await DB.signIn(u,p)).id}else throw e}
+  await DB.addProfile({id:uid,username:u,name:n,role:'admin',branch_id:'ALL',active:true});CS.setup=false;await cloudEnter(uid);page='dash';bump();render()}catch(e){alert(e.message)}}
+function cloudGate(){const brand=`<div class="lb"><span class="logo">${icon('dash')}</span>${esc(S.settings.company)}</div>`;
+ if(CS.err==='lib')return `<div class="login"><div class="pn">${brand}<h2>Cannot connect</h2><p class="mu">The cloud library could not load. Check your internet connection and reload the page.</p></div></div>`;
+ if(CS.setup)return `<div class="login"><div class="pn">${brand}<h2>Welcome. Create the administrator</h2><p class="mu">This is the first account for the company database. It manages users, roles and settings. Keep the password safe.</p><div class="fg"><label>Full name<input id="su_n"></label><label>Username<input id="su_u" autocomplete="off"></label><label>Password (min 6)<input id="su_p" type="password"></label><label>Repeat password<input id="su_p2" type="password"></label></div><div class="ac"><button onclick="cloudSetup()">Create &amp; sign in</button></div></div></div>`;
+ return `<div class="login"><div class="pn">${brand}<h2>Sign in</h2><p class="sub">Enter your details to continue.</p>${CS.err?`<p class="low">${esc(CS.err)}</p>`:''}<div class="fg" style="grid-template-columns:1fr"><label>Username<input id="lu" autocomplete="username"></label><label>Password<input id="lpw" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')cloudLogin()"></label></div><div class="ac"><button onclick="cloudLogin()">Sign in</button></div></div></div>`}
+function userFormCloud(id){const u=S.users.find(x=>x.id===id)||{name:'',username:'',role:'sales',branchId:'ALL',active:true};
+ openForm(id?'Edit user':'New user',[{k:'name',label:'Full name',val:u.name},{k:'username',label:id?'Username (cannot be changed)':'Username',val:u.username},{k:'role',label:'Department / role',type:'select',opts:Object.keys(ROLES).map(k=>[k,ROLES[k].label]),val:u.role},{k:'branchId',label:'Branch access',type:'select',opts:[['ALL','All branches']].concat(S.branches.map(b=>[b.id,b.name])),val:u.branchId},{k:'active',label:'Status',type:'select',opts:[['y','Active'],['n','Disabled']],val:u.active===false?'n':'y'}].concat(id?[]:[{k:'pw',label:'Password (min 6)',type:'password'}]),o=>{
+  const un=o.username.trim().toLowerCase(),active=o.active==='y';if(!o.name||!un)throw new Error('Name and username are required');
+  if(!id){if(!/^[a-z0-9._-]+$/.test(un))throw new Error('Username: letters, numbers, dot, dash or underscore only');if(S.users.some(x=>x.username===un))throw new Error('Username already taken');if((o.pw||'').length<6)throw new Error('Password must be at least 6 characters')}
+  if(id&&u.role==='admin'&&(o.role!=='admin'||!active)&&S.users.filter(x=>x.role==='admin'&&x.active!==false&&x.id!==id).length===0)throw new Error('There must be at least one active administrator');
+  (async()=>{try{if(id)await DB.setProfile(id,{name:o.name,role:o.role,branch_id:o.branchId,active});else{const uid=await DB.signUpOther(un,o.pw);await DB.addProfile({id:uid,username:un,name:o.name,role:o.role,branch_id:o.branchId,active:true})}
+   log('user '+(id?'edited':'created'),un+' ('+o.role+')');S.users=(await DB.profiles()).map(mapP);closeM();save();render()}catch(e){alert(e.message)}})();return false})}
+function accountPanel(){return `<div class="pn"><h3>My account</h3><p class="mu">Signed in as <b>${esc(U.username)}</b>. Data is stored in the company database and shared between devices${CS.state==='synced'?' (all changes saved)':CS.state==='error'?' — <span class="low">sync problem: '+esc(CS.err)+'</span>':' (syncing…)'}.</p><div class="tb"><button class="b2" onclick="changeMyPw()">Change my password</button><button class="b2" onclick="pullNow(true).then(()=>pushNow()).then(()=>alert('Sync finished'))">Sync now</button></div></div>`}
+function changeMyPw(){openForm('Change my password',[{k:'p1',label:'New password (min 6)',type:'password'},{k:'p2',label:'Repeat password',type:'password'}],o=>{if(o.p1.length<6)throw new Error('Password must be at least 6 characters');if(o.p1!==o.p2)throw new Error('Passwords do not match');
+ DB.changePw(o.p1).then(()=>{closeM();alert('Password changed')}).catch(e=>alert(e.message));return false})}
+
+(async()=>{S=await load();if(!S){S=seed();save()}migrate();
+ if(CLOUD){await cloudBoot()}else{try{const id=sessionStorage.getItem('sr_uid');const u=S.users.find(x=>x.id===id&&x.active!==false);if(u)U=u}catch(e){}}
+ bump();render()})();
 </script>
 </body>
 </html>
